@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from .models import PasswordEntry
+from .secure_csv import private_csv
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class ApplePasswordsCSVParser:
         duplicates = 0
         errors = 0
 
-        with open(csv_path, "r", encoding="utf-8") as f:
+        with open(csv_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
 
             # Validate headers
@@ -59,7 +60,7 @@ class ApplePasswordsCSVParser:
                     # Required fields
                     title = row.get("Title", "").strip()
                     username = row.get("Username", "").strip()
-                    password = row.get("Password", "").strip()
+                    password = row.get("Password", "")
 
                     if not title or not username or not password:
                         logger.warning(
@@ -107,7 +108,6 @@ class ApplePasswordsCSVParser:
                         account_index[account_key] = entry
                         entries.append(entry)
 
-
                 except Exception as e:
                     logger.error(f"Row {row_num}: Error parsing entry: {e}")
                     errors += 1
@@ -131,9 +131,7 @@ class ApplePasswordsCSVParser:
         Raises:
             IOError: If file cannot be written
         """
-        import os
-
-        with open(output_path, "w", encoding="utf-8", newline="") as f:
+        with private_csv(output_path) as f:
             writer = csv.DictWriter(
                 f, fieldnames=["Title", "URL", "Username", "Password", "Notes", "OTPAuth"]
             )
@@ -152,8 +150,5 @@ class ApplePasswordsCSVParser:
                             "OTPAuth": entry.otp_auth or "",
                         }
                     )
-
-        # Set secure permissions (owner read/write only)
-        os.chmod(output_path, 0o600)
 
         logger.info(f"Wrote {len(entries)} entries to Apple Passwords CSV: {output_path}")

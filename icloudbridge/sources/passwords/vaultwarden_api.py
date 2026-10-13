@@ -507,12 +507,10 @@ class VaultwardenAPIClient:
 
                 create_entry = True
                 if dedup_key in existing_map:
-                    existing = existing_map[dedup_key]
-                    create_entry = existing.password != entry.password
-                    if not create_entry:
-                        stats["skipped"] += 1
-                        logger.debug(f"Skipped unchanged: {entry.title}")
-                        continue
+                    # Imports are additive: a fresh read may reveal a concurrent edit.
+                    # Never create a second version of an existing login automatically.
+                    stats["skipped"] += 1
+                    continue
 
                 if dry_run:
                     if create_entry:
@@ -529,8 +527,8 @@ class VaultwardenAPIClient:
                     stats["skipped"] += 1
                     logger.debug(f"Skipped (update not implemented): {entry.title}")
 
-            except Exception as e:
-                error_msg = f"Failed to push {entry.title}: {e}"
+            except Exception:
+                error_msg = "Password preparation failed; refresh snapshots before retrying"
                 logger.error(error_msg)
                 stats["failed"] += 1
                 stats["errors"].append(error_msg)
@@ -555,8 +553,8 @@ class VaultwardenAPIClient:
                 await self._post_cipher_payload(payload)
                 stats["created"] += 1
                 logger.debug(f"Created: {entry.title}")
-            except Exception as exc:
-                error_msg = f"Failed to push {entry.title}: {exc}"
+            except Exception:
+                error_msg = "Password addition failed; refresh snapshots before retrying"
                 logger.error(error_msg)
                 stats["failed"] += 1
                 stats["errors"].append(error_msg)
