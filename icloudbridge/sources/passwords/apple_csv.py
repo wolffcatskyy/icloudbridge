@@ -62,7 +62,7 @@ class ApplePasswordsCSVParser:
                     username = row.get("Username", "").strip()
                     password = row.get("Password", "")
 
-                    if not title or not username or not password:
+                    if not title:
                         logger.warning(
                             f"Row {row_num}: Skipping entry with missing required fields"
                         )
@@ -71,7 +71,7 @@ class ApplePasswordsCSVParser:
 
                     # Optional fields
                     url = row.get("URL", "").strip() or None
-                    notes_raw = row.get("Notes", "").strip()
+                    notes_raw = row.get("Notes", "")
                     notes = notes_raw or None
                     otp_auth = row.get("OTPAuth", "").strip() or None
 

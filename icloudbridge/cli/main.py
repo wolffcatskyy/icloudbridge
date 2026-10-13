@@ -3,6 +3,7 @@
 import asyncio
 import sys
 import logging
+from uuid import uuid4
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -12,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from icloudbridge import __version__
+from icloudbridge.sources.passwords.diagnostics import log_failure, safe_failure
 from icloudbridge.core.config import load_config
 from icloudbridge.core.photos_export_engine import ExportConfig, PhotoExportEngine
 from icloudbridge.core.photos_sync import PhotoSyncEngine
@@ -2090,7 +2092,7 @@ def passwords_sync(
     db = PasswordsDB(db_path)
 
     cfg.ensure_data_dir()
-    default_output = cfg.general.data_dir / "apple-import.csv"
+    default_output = cfg.general.data_dir / f"apple-import-{uuid4().hex}.csv"
     output_path = output or default_output
 
     async def run_sync():
@@ -2180,9 +2182,9 @@ def passwords_sync(
         if new_entries > 0:
             console.print(f"   → rm {pull_stats.get('download_path')}")
 
-    except Exception:
-        console.print("[red]Sync failed. Refresh snapshots before retrying.[/red]")
-        logging.error("Password sync failed")
+    except Exception as exc:
+        console.print(f"[red]{safe_failure(exc)}[/red]")
+        log_failure(logging.getLogger(__name__), exc)
         raise typer.Exit(1)
 
 

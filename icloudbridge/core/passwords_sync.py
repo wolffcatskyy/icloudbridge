@@ -1,13 +1,17 @@
 """Password synchronization engine for Apple Passwords and password providers."""
 
+import asyncio
 import logging
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from ..sources.passwords.apple_csv import ApplePasswordsCSVParser
 from ..sources.passwords.bitwarden_csv import BitwardenCSVParser
 from ..sources.passwords.models import PasswordEntry
 from ..sources.passwords.providers.base import PasswordProviderBase
+from ..sources.passwords.providers.vaultwarden import VaultwardenProvider
+from ..sources.passwords.retry import retry_addition
 from ..utils.db import PasswordsDB
 
 logger = logging.getLogger(__name__)
@@ -397,12 +401,29 @@ class PasswordsSyncEngine:
         }
 
     @staticmethod
+    def _otp(value):
+        if not value:
+            return None
+        if not value.startswith("otpauth://"):
+            return (value.replace(" ", "").upper(), "SHA1", "6", "30")
+        parsed = urlparse(value)
+        fields = parse_qs(parsed.query)
+        if parsed.netloc != "totp" or not fields.get("secret"):
+            return value
+        return (
+            fields["secret"][0].replace(" ", "").upper(),
+            fields.get("algorithm", ["SHA1"])[0].upper(),
+            fields.get("digits", ["6"])[0],
+            fields.get("period", ["30"])[0],
+        )
+
+    @staticmethod
     def _content(entry: PasswordEntry) -> tuple:
         # Metadata is compared in memory only; OTP and notes must not enter the DB.
         return (
             entry.password,
             entry.notes or "",
-            entry.otp_auth or "",
+            PasswordsSyncEngine._otp(entry.otp_auth),
             tuple(sorted(entry.get_all_urls())),
         )
 
@@ -482,14 +503,18 @@ class PasswordsSyncEngine:
 
         Simulation performs reads only. Exporting an Apple CSV is not confirmation
         of import: save baselines only for pairs actually observed in both snapshots.
-        Bulk requests use individual creates so partial success remains observable.
+        Vaultwarden batches share a vault read but retain individual create outcomes.
         """
         if not run_push and not run_pull:
             raise ValueError("At least one sync phase must be enabled")
         if run_push and apple_csv_path is None:
             raise ValueError("Apple CSV path is required for push phase")
         start = time.time()
-        apple_entries = ApplePasswordsCSVParser.parse_file(apple_csv_path) if apple_csv_path else []
+        apple_entries = (
+            await asyncio.to_thread(ApplePasswordsCSVParser.parse_file, apple_csv_path)
+            if apple_csv_path
+            else []
+        )
         # Fail closed: never interpret a failed remote read as an empty vault.
         remote_entries = [
             PasswordEntry(
@@ -514,10 +539,13 @@ class PasswordsSyncEngine:
                 m["username"].lower().strip(),
             ): m
             for m in mappings
+            if m.get("confirmed", False)
         }
         apple_map = {e.get_dedup_key(): e for e in apple_entries}
         remote_map = {e.get_dedup_key(): e for e in remote_entries}
-        plan = self._build_password_sync_plan(apple_map, remote_map, baseline)
+        plan = await asyncio.to_thread(
+            self._build_password_sync_plan, apple_map, remote_map, baseline
+        )
         reviews = [
             {
                 "title": key[0],
@@ -550,26 +578,49 @@ class PasswordsSyncEngine:
                     }
                 )
 
-        # A mapped entry that changed its title/URL must not become a new login.
+        # Index identities once; equal pairs can clear old renamed mappings.
+        by_title, by_url, by_id = {}, {}, {}
+        matched = set(plan["unchanged"])
+        for e in apple_entries + remote_entries:
+            key = e.get_dedup_key()
+            if key in matched:
+                continue
+            by_title.setdefault((key[0], key[2]), []).append(e)
+            if key[1]:
+                by_url.setdefault((key[1], key[2]), []).append(e)
+            if e.provider_id:
+                by_id.setdefault(e.provider_id, []).append(e)
         for key, previous in baseline.items():
-            for e in apple_entries + remote_entries:
+            candidates = (
+                by_title.get((key[0], key[2]), [])
+                + by_url.get((key[1], key[2]), [])
+                + by_id.get(previous.get("provider_id"), [])
+            )
+            for e in candidates:
                 current = e.get_dedup_key()
-                if current != key and (
-                    (current[0], current[2]) == (key[0], key[2])
-                    or (current[1] is not None and (current[1], current[2]) == (key[1], key[2]))
-                    or (e.provider_id and e.provider_id == previous.get("provider_id"))
-                ):
-                    identity = (current[0], current[2])
-                    if identity not in blocked:
-                        blocked.add(identity)
-                        reviews.append(
-                            {
-                                "title": e.title,
-                                "username": e.username,
-                                "action": "review",
-                                "reason": "mapped_identity_changed",
-                            }
-                        )
+                identity = (current[0], current[2])
+                if current != key and identity not in blocked:
+                    blocked.add(identity)
+                    reviews.append(
+                        {
+                            "title": e.title,
+                            "username": e.username,
+                            "action": "review",
+                            "reason": "mapped_identity_changed",
+                        }
+                    )
+        for e in apple_entries + remote_entries:
+            if not e.password:
+                key = e.get_dedup_key()
+                blocked.add((key[0], key[2]))
+                reviews.append(
+                    {
+                        "title": e.title,
+                        "username": e.username,
+                        "action": "review",
+                        "reason": "missing_password",
+                    }
+                )
 
         def allowed(e):
             return (e.title.lower().strip(), e.username.lower().strip()) not in blocked
@@ -587,29 +638,67 @@ class PasswordsSyncEngine:
         if not simulate:
             # Validate/create the export before attempting any remote mutation.
             if exports:
-                ApplePasswordsCSVParser.write_file(exports, output_apple_csv)
+                await asyncio.to_thread(
+                    ApplePasswordsCSVParser.write_file, exports, output_apple_csv
+                )
             folders_created = await self._ensure_provider_folders(additions, provider)
-            for entry in additions:
-                try:
-                    await provider.create_password(entry)
-                    created += 1
-                except Exception:
-                    failed += 1
-                    # Provider exceptions can contain plaintext; don't expose them.
-                    logger.warning("Password addition failed; refresh snapshots before retrying")
+            if additions and isinstance(provider, VaultwardenProvider):
+                stats = await provider.create_passwords(additions)
+                created, failed = stats.get("created", 0), stats.get("failed", 0)
+            else:
+                for entry in additions:
+                    try:
+
+                        async def exists(entry=entry):
+                            return any(
+                                PasswordEntry(
+                                    title=item.get("label") or item.get("title", ""),
+                                    username=item.get("username", ""),
+                                    password=item.get("password", ""),
+                                    url=item.get("url"),
+                                ).get_dedup_key()
+                                == entry.get_dedup_key()
+                                for item in await provider.list_passwords()
+                            )
+
+                        if await retry_addition(
+                            lambda entry=entry: provider.create_password(entry), exists
+                        ):
+                            created += 1
+                    except Exception:
+                        failed += 1
+                        logger.warning(
+                            "Password addition failed; refresh snapshots before retrying"
+                        )
             if apple_csv_path is not None:
+                confirmed = []
                 for key in plan["unchanged"]:
                     a, r = apple_map[key], remote_map[key]
                     if allowed(a):
-                        await self.db.upsert_password_mapping(
-                            title=a.title,
-                            username=a.username,
-                            url=a.url,
-                            provider_id=r.provider_id,
-                            provider_type=provider_type,
-                            last_apple_hash=a.get_password_hash(),
-                            last_provider_hash=r.get_password_hash(),
+                        confirmed.append(
+                            {
+                                "title": a.title,
+                                "username": a.username,
+                                "url": a.url,
+                                "provider_id": r.provider_id,
+                                "provider_type": provider_type,
+                                "last_apple_hash": a.get_password_hash(),
+                                "last_provider_hash": r.get_password_hash(),
+                            }
                         )
+                # Retire tracking only when both fresh snapshots omit the old key.
+                # Keep one-sided old identities held, even if the provider ID moved.
+                retired = [
+                    m
+                    for key, m in baseline.items()
+                    if key not in apple_map and key not in remote_map
+                ]
+                await self.db.confirm_password_snapshot(confirmed, retired, apple_entries)
+                await self.db.record_sync(
+                    sync_type="apple_import",
+                    file_path=str(apple_csv_path),
+                    entry_count=len(apple_entries),
+                )
         push = {
             "created": created,
             "planned_created": len(additions),

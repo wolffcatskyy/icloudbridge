@@ -125,6 +125,14 @@ class VaultwardenProvider(PasswordProviderBase):
             raise RuntimeError("Password was not added; refresh snapshots before retrying")
         return ""
 
+    async def create_passwords(self, entries: list[PasswordEntry]) -> dict:
+        """One fresh vault read for a batch; retain per-cipher success accounting."""
+        folders = await self.client.list_folders()
+        folder_mapping = {folder["name"]: folder["id"] for folder in folders}
+        return await self.client.push_passwords(
+            entries=entries, folder_mapping=folder_mapping, dry_run=False, use_bulk=False
+        )
+
     async def update_password(self, password_id: str, entry: PasswordEntry) -> bool:
         """
         Update an existing password entry.

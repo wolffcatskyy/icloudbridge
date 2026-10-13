@@ -16,6 +16,7 @@ from icloudbridge.api.downloads import download_manager
 from icloudbridge.api.models import NextcloudCredentialRequest, VaultwardenCredentialRequest
 from icloudbridge.core.otp_matcher import build_preview
 from icloudbridge.sources.passwords.apple_csv import ApplePasswordsCSVParser
+from icloudbridge.sources.passwords.diagnostics import log_failure, safe_failure
 from icloudbridge.sources.passwords.ente_auth import EnteAuthParser
 from icloudbridge.sources.passwords.providers import NextcloudPasswordsProvider, VaultwardenProvider
 from icloudbridge.sources.passwords.vaultwarden_api import VaultwardenAPIClient
@@ -217,12 +218,12 @@ async def _run_passwords_sync(
                 log_id=log_id,
                 status="failed",
                 duration_seconds=0,
-                error_message="Password sync failed; refresh snapshots before retrying",
+                error_message=safe_failure(exc),
             )
-        logger.error("Passwords sync failed (%s)", type(exc).__name__)
+        log_failure(logger, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Password sync failed; refresh snapshots before retrying.",
+            detail=safe_failure(exc),
         ) from None
     finally:
         if apple_csv_path:

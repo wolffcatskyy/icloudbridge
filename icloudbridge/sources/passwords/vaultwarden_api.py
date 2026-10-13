@@ -13,6 +13,7 @@ import httpx
 from argon2.low_level import Type, hash_secret_raw
 
 from icloudbridge import __version__
+from .retry import retry_addition
 
 from .bitwarden_crypto import (
     encrypt_optional_list,
@@ -550,8 +551,12 @@ class VaultwardenAPIClient:
         # Fallback to per-item creation
         for entry, payload in payload_queue:
             try:
-                await self._post_cipher_payload(payload)
-                stats["created"] += 1
+                async def exists(entry=entry):
+                    return any(e.get_dedup_key() == entry.get_dedup_key() for e in await self.pull_passwords())
+                if await retry_addition(lambda payload=payload: self._post_cipher_payload(payload), exists):
+                    stats["created"] += 1
+                else:
+                    stats["skipped"] += 1
                 logger.debug(f"Created: {entry.title}")
             except Exception:
                 error_msg = "Password addition failed; refresh snapshots before retrying"

@@ -37,6 +37,7 @@ def mapping(password="synthetic"):
         "last_apple_hash": e.get_password_hash(),
         "last_provider_hash": e.get_password_hash(),
         "last_sync_timestamp": 9999999999,
+        "confirmed": True,
     }
 
 
@@ -130,8 +131,8 @@ async def test_equal_changed_pair_establishes_observed_baseline(tmp_path):
     db, remote = database([mapping()]), provider([entry("same-new")])
     result = await PasswordsSyncEngine(db).sync(apple_csv_path=csv, provider=remote)
     assert result["push"]["conflicts"] == []
-    db.upsert_password_mapping.assert_awaited_once()
-    assert "password" not in db.upsert_password_mapping.call_args.kwargs
+    db.confirm_password_snapshot.assert_awaited_once()
+    assert "password" not in db.confirm_password_snapshot.call_args.args[0][0]
 
 
 async def test_export_is_not_confirmed_apple_import(tmp_path):

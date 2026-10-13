@@ -434,6 +434,7 @@ class APIClient {
       const formData = new FormData();
       if (options?.appleFile) formData.append('file', options.appleFile);
       const { data } = await this.client.post<PasswordsSyncResponse>('/passwords/sync/import', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
         params: {
           simulate: options?.simulate ?? false,
           bulk: options?.bulk ?? true,
