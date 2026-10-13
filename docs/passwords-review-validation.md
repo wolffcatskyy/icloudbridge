@@ -6,6 +6,11 @@ Follow-up to upstream PR #35 review, tested October 13, 2026.
 
 - 68 password reconciliation, CSV, migration, provider-response, retry, Ente parser,
   and OTP matcher tests pass on Linux (0.68s) and macOS Monterey 12.7.6.
+- After installing Apple Command Line Tools 14.2, the full app installs and the
+  CLI help command loads successfully. Adding the existing Ente API tests gives
+  70 passing tests on Monterey (3.44s), with five dependency deprecation warnings.
+  This environment pins argon2-cffi-bindings 21.2.0 and html-to-markdown 2.5.1;
+  the latter was compiled locally. The repository dependency declarations are unchanged.
 - Real SQLite coverage includes legacy unconfirmed rows, NULL URL duplicate cleanup,
   three unchanged syncs, converged renames, tracking-only deletion, and keeping a
   one-sided old identity held when a replacement pair matches.
@@ -44,10 +49,10 @@ not 200 full-vault reads. Actual server timings remain to be measured.
 - Two actual CLI runs retaining the previous default export, and screenshots of
   the real review list. Default filenames are now unique; existing explicit paths
   still fail safely with an actionable message.
-- Full-app native integration. Installation was attempted in an isolated Monterey
-  directory, but html-to-markdown's Intel Mac dependency requires compilation and
-  Apple developer tools are not installed. The password-only regression suite ran
-  using an isolated Python 3.13 environment; this is not full app validation.
+- Full native UI/provider integration remains outstanding. Full app installation,
+  CLI startup, and the existing Ente API tests now work in the isolated Monterey
+  Python 3.13 environment. Actual password-sync CLI runs and real server tests
+  are still pending; startup and fixture tests do not establish those behaviors.
 
 No personal vaults, exports, passwords, or actual account credentials were accessed.
 Keep PR #35 as draft until the maintainer's real-provider validation is complete.
