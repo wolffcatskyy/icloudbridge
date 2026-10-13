@@ -46,13 +46,50 @@ not 200 full-vault reads. Actual server timings remain to be measured.
   Passwords servers, using an actual Apple export of throwaway logins.
 - First import into empty providers, 200-login create throughput, all edit/rename/
   delete/convergence combinations, and real Simulate-versus-apply parity.
-- Two actual CLI runs retaining the previous default export, and screenshots of
-  the real review list. Default filenames are now unique; existing explicit paths
-  still fail safely with an actionable message.
+- Screenshots of the real review list. The actual Vaultwarden CLI repeated-export
+  check is completed below; the corresponding Nextcloud and genuine-Apple-export
+  runs remain outstanding.
 - Full native UI/provider integration remains outstanding. Full app installation,
   CLI startup, and the existing Ente API tests now work in the isolated Monterey
-  Python 3.13 environment. Actual password-sync CLI runs and real server tests
-  are still pending; startup and fixture tests do not establish those behaviors.
+  Python 3.13 environment. See the native Tahoe follow-up below for actual
+  Vaultwarden CLI/API/server checks. Nextcloud and genuine-Apple-export validation
+  remain pending; startup and fixture tests do not establish those behaviors.
 
 No personal vaults, exports, passwords, or actual account credentials were accessed.
 Keep PR #35 as draft until the maintainer's real-provider validation is complete.
+
+## Native Tahoe and real Vaultwarden follow-up
+
+A separate standard `icbtest` account on an Intel MacPro6,1 running macOS Tahoe
+26.7.2 was used; the personal user's password vault was not accessed. Python
+3.13.16 and the full app are installed in that account's isolated test directory.
+The current dependency declarations install without the older Monterey pins.
+
+- 71 selected reconciliation, parser, migration, retry, API, and certificate-policy
+  regression tests pass on Tahoe (1.64s; five dependency deprecation warnings).
+- A real, disposable Vaultwarden 1.34.3 server is bound to the Linux host's loopback
+  only, and reached from the Mac through an authenticated SSH loopback tunnel.
+  The Mac run created 200 synthetic logins with zero failures; Simulate plus apply
+  took 0.773s. Three subsequent unchanged syncs took 0.080 / 0.081 / 0.079s,
+  with zero review items, zero additions, and zero proposed exports each time.
+- Actual provider edits and deletes were exercised. An Apple-side edit yielded one
+  review item, then matching the provider cleared it. A provider rename yielded two
+  review items, then matching Apple cleared both. A provider deletion yielded one
+  review item; deleting the Apple test row cleared it without vault mutation.
+- The native CLI completed twice against this real server, retaining the first
+  export while creating a second distinct default export (3.761s and 2.015s).
+- The actual API ran in the test user's GUI session with the app's normal macOS
+  keyring backend. Real multipart uploads returned HTTP 200. Simulate proposed one
+  export and produced no download; apply exported exactly one login with no review
+  items (0.828s and 0.759s respectively).
+- Integration setup exposed a separate API bug: Nextcloud's provider builder did
+  not pass through the configured certificate policy. It now preserves that policy,
+  including a custom CA path, matching the CLI. The new native regression covers it.
+- The production frontend was built and served by this native API. Automated UI
+  screenshots remain pending because a controllable browser is not available here.
+
+These live-server runs use synthetic CSVs written in Apple format, **not yet a genuine
+Apple Passwords export**. The fixture has been placed in the isolated Mac account
+for import and export through Apple's actual app. The genuine export, Nextcloud
+live integration, web UI actions/screenshots, and complete acceptance matrix remain
+outstanding. The PR must remain draft; no full acceptance claim is made.

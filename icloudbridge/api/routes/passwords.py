@@ -71,7 +71,10 @@ async def _build_password_provider(config: ConfigDep):
                 detail="Nextcloud credentials not found. Please configure them first.",
             )
 
-        provider = NextcloudPasswordsProvider(url, username, credentials["app_password"])
+        provider = NextcloudPasswordsProvider(
+            url, username, credentials["app_password"],
+            ssl_verify_cert=config.passwords.passwords_ssl_verify_cert,
+        )
     else:
         email = config.passwords.vaultwarden_email
         url = config.passwords.vaultwarden_url
