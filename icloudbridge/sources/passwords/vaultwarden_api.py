@@ -119,6 +119,8 @@ class VaultwardenAPIClient:
         )
         self._master_key: bytes | None = None
         self._user_key: bytes | None = None
+        self._user_id: str | None = None
+        self._user_key_id: str | None = None
 
     _truststore_injected = False
 
@@ -757,6 +759,11 @@ class VaultwardenAPIClient:
             "login": {},
         }
 
+        if self._user_id:
+            cipher_data["encryptedFor"] = self._user_id
+        if self._user_key_id:
+            cipher_data["encryptedByKeyId"] = self._user_key_id
+
         if entry.notes:
             cipher_data["notes"] = encrypt_string(entry.notes, user_key)
 
@@ -837,6 +844,8 @@ class VaultwardenAPIClient:
         response = await self._client.get(profile_url, headers=self._get_headers())
         response.raise_for_status()
         profile = response.json()
+        self._user_id = profile.get("id")
+        self._user_key_id = profile.get("userKeyId")
         encrypted_key = profile.get("key")
         if not encrypted_key:
             raise RuntimeError("Profile missing encryption key")

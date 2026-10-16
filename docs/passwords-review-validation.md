@@ -93,3 +93,53 @@ Apple Passwords export**. The fixture has been placed in the isolated Mac accoun
 for import and export through Apple's actual app. The genuine export, Nextcloud
 live integration, web UI actions/screenshots, and complete acceptance matrix remain
 outstanding. The PR must remain draft; no full acceptance claim is made.
+
+## October 16 follow-up: Safari compatibility and native browser checks
+
+The previously local Safari compatibility and Vaultwarden ownership fixes have
+been recovered onto the current PR head and checked in an isolated checkout.
+
+- HTTP(S) scheme/host and empty-root-path normalization now recognizes Safari's
+  trailing slash without folding case-sensitive paths, queries, fragments, or URL
+  user information. Existing root-URL mapping aliases are consolidated only after
+  an equal pair is actually observed in both fresh snapshots.
+- Provider entries missing a username or URL are held for manual review instead
+  of repeatedly generating CSV rows Apple cannot import.
+- Vaultwarden cipher payloads preserve the authenticated profile's user and key
+  ownership identifiers when present.
+- The first comparison now holds possible renamed logins sharing a URL and
+  username across snapshots, even without a stored baseline. Otherwise the first
+  run could propose a duplicate and only identify it after recording a baseline.
+  Exact equal pairs with distinct titles remain supported.
+
+Current validation of these changes:
+
+- Linux: **80 passed, 1 skipped**, covering reconciliation, regression fixtures,
+  TLS policy, and existing OTP parsers/matcher. The skipped TLS check requires
+  macOS. API app collection on Linux requires unavailable EventKit, so native
+  results are reported separately.
+- Native Mac, isolated `icbtest` account: **83 passed**, including the TLS and
+  existing Ente API checks, with five existing dependency deprecation warnings.
+- Changed reconciliation/model/regression modules pass Ruff; diff whitespace
+  checks, frontend TypeScript checking, Vite production build, and the actual
+  API-client multipart upload check pass.
+- Replayed the saved genuine 195-row Apple export from the separate disposable
+  Apple account against the original 200-row synthetic snapshot using a fixture
+  provider and real SQLite. Simulate and three apply runs produced zero provider
+  additions and zero Apple exports, with the same eight review rows each time.
+  Those rows cover metadata differences, ambiguity/possible renames, and entries
+  Apple could not import. No personal exports or passwords were used.
+- Browser acceptance exercised the production-built frontend with the real
+  password routes and sync engine on the Mac. An in-memory disposable provider
+  replaced the live provider/credential builder, and the server was bound to
+  loopback and reached through authenticated SSH. Upload, Simulate, review list,
+  Sync, history, and generated CSV download passed. Simulation showed one planned
+  addition and one planned export, with no download. Apply created one fixture
+  entry and exported exactly one login for manual Apple import; the downloaded
+  CSV was verified. This is **not** a new Vaultwarden/Nextcloud live-server test.
+
+Still outstanding: importing a newly generated provider-to-Apple CSV through the
+actual Apple app, exporting again, and confirming convergence with the providers.
+The old disposable provider endpoints are currently stopped and no Docker daemon
+is available in this session; they were not restarted. No live user vault or host
+service was changed. Keep the PR draft until that remaining acceptance is done.

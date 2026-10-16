@@ -74,7 +74,9 @@ async def test_legacy_null_duplicates_unconfirmed_until_seen_both(tmp_path):
     path = tmp_path / "apple.csv"
     ApplePasswordsCSVParser.write_file([], path)
     result = await PasswordsSyncEngine(db).sync(
-        apple_csv_path=path, provider=remote([e()]), output_apple_csv=tmp_path / "export.csv"
+        apple_csv_path=path,
+        provider=remote([e(username="fixture", url="https://example.invalid")]),
+        output_apple_csv=tmp_path / "export.csv",
     )
     assert result["pull"]["new_entries"] == 1 and result["pull"]["conflicts"] == []
 
@@ -242,3 +244,121 @@ async def test_one_sided_old_identity_stays_held_after_new_pair_matches(tmp_path
         assert result["push"]["conflicts"][0]["reason"] == "missing_side_review"
     p.create_password.assert_not_awaited()
     assert len(await db.get_all_password_mappings()) == 2
+
+
+async def test_current_vaultwarden_profile_ownership_reaches_cipher_payload():
+    from icloudbridge.sources.passwords.bitwarden_crypto import encrypt_string
+    from icloudbridge.sources.passwords.vaultwarden_api import VaultwardenAPIClient
+
+    master = b"0" * 32
+    user_key = "A" * 64
+    client = VaultwardenAPIClient("https://fixture.invalid", "fixture@example.invalid", "throwaway")
+    await client._client.aclose()
+    client.access_token = "fixture-token"
+    client._master_key = master
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "id": "fixture-user",
+                    "userKeyId": "fixture-key-id",
+                    "key": encrypt_string(user_key, master),
+                },
+            )
+        )
+    )
+    key = await client._ensure_user_key()
+    assert key == user_key.encode()
+    payload = client._build_cipher_payload(e(), None, key, include_folder_id=True)
+    assert payload["encryptedFor"] == "fixture-user"
+    assert payload["encryptedByKeyId"] == "fixture-key-id"
+    await client.close()
+
+
+async def test_safari_root_url_canonicalization_confirms_existing_pair(tmp_path):
+    db = PasswordsDB(tmp_path / "db.sqlite")
+    await db.initialize()
+    a = e(username="fixture", url="https://example.invalid/")
+    r = e(username="fixture", url="https://example.invalid")
+    await db.upsert_password_mapping(
+        title=r.title,
+        username=r.username,
+        url=r.url,
+        provider_id="0",
+        provider_type="asyncmock",
+        last_apple_hash=r.get_password_hash(),
+        last_provider_hash=r.get_password_hash(),
+    )
+    path = tmp_path / "apple.csv"
+    ApplePasswordsCSVParser.write_file([a], path)
+    for _ in range(3):
+        result = await PasswordsSyncEngine(db).sync(apple_csv_path=path, provider=remote([r]))
+        assert not result["push"]["conflicts"]
+    mappings = await db.get_all_password_mappings()
+    assert len(mappings) == 1 and mappings[0]["url"] == a.url
+    assert (
+        e(url="https://example.invalid/path").get_dedup_key()
+        != e(url="https://example.invalid/path/").get_dedup_key()
+    )
+    assert (
+        e(url="https://example.invalid/Path").get_dedup_key()
+        != e(url="https://example.invalid/path").get_dedup_key()
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (" HTTPS://EXAMPLE.INVALID ", "https://example.invalid/"),
+        (
+            "https://EXAMPLE.INVALID/Path?Key=Value#Fragment",
+            "https://example.invalid/Path?Key=Value#Fragment",
+        ),
+        ("https://User:Secret@EXAMPLE.INVALID", "https://User:Secret@example.invalid/"),
+        ("androidapp://Example/Path", "androidapp://Example/Path"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_url_normalization_preserves_case_sensitive_content(url, expected):
+    assert PasswordEntry.normalize_url(url) == expected
+
+
+@pytest.mark.parametrize("simulate", [True, False])
+async def test_first_sync_holds_possible_renamed_login_without_baseline(tmp_path, simulate):
+    apple = e("Apple label", "fixture", "https://example.invalid/")
+    provider_entry = e("Provider label", "fixture", "https://example.invalid")
+    path = tmp_path / "apple.csv"
+    ApplePasswordsCSVParser.write_file([apple], path)
+    db = PasswordsDB(tmp_path / "db.sqlite")
+    await db.initialize()
+    provider = remote([provider_entry])
+    result = await PasswordsSyncEngine(db).sync(
+        apple_csv_path=path,
+        provider=provider,
+        simulate=simulate,
+        output_apple_csv=tmp_path / "export.csv",
+    )
+    assert result["push"]["planned_created"] == result["push"]["created"] == 0
+    assert result["pull"]["planned_new_entries"] == result["pull"]["new_entries"] == 0
+    assert {r["reason"] for r in result["pull"]["conflicts"]} == {"possible_renamed_identity"}
+    provider.create_password.assert_not_called()
+    assert not (tmp_path / "export.csv").exists()
+
+
+@pytest.mark.parametrize(
+    ("row", "reason"),
+    [(e(), "apple_import_missing_username"), (e(username="fixture"), "apple_import_missing_url")],
+)
+async def test_unimportable_apple_rows_are_reviewed_not_reexported(tmp_path, row, reason):
+    path = tmp_path / "apple.csv"
+    ApplePasswordsCSVParser.write_file([], path)
+    db = AsyncMock()
+    db.get_all_password_mappings.return_value = []
+    result = await PasswordsSyncEngine(db).sync(
+        apple_csv_path=path, provider=remote([row]), output_apple_csv=tmp_path / "export.csv"
+    )
+    assert result["pull"]["new_entries"] == 0
+    assert result["pull"]["conflicts"][0]["reason"] == reason
+    assert not (tmp_path / "export.csv").exists()

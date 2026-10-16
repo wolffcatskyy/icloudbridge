@@ -237,6 +237,7 @@ async def test_invalid_output_fails_before_provider_mutation(tmp_path):
     output.write_text("preserve")
     other = entry()
     other.title = "Other"
+    other.url = "https://other.invalid"
     remote = provider([other])
     with pytest.raises(FileExistsError):
         await PasswordsSyncEngine(database()).sync(

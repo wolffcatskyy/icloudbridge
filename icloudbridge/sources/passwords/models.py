@@ -2,6 +2,7 @@
 
 import hashlib
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit, urlunsplit
 
 
 @dataclass
@@ -40,16 +41,40 @@ class PasswordEntry:
         """
         return hashlib.sha256(self.password.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def normalize_url(url: str | None) -> str | None:
+        """Safari serializes an empty HTTP path as '/'; paths otherwise remain distinct."""
+        if not url or not url.strip():
+            return None
+        value = url.strip()
+        try:
+            parts = urlsplit(value)
+            if parts.scheme.lower() in {"http", "https"} and parts.netloc:
+                userinfo, separator, hostport = parts.netloc.rpartition("@")
+                authority = (userinfo + separator if separator else "") + hostport.lower()
+                return urlunsplit(
+                    (
+                        parts.scheme.lower(),
+                        authority,
+                        parts.path or "/",
+                        parts.query,
+                        parts.fragment,
+                    )
+                )
+        except ValueError:
+            pass
+        return value
+
     def get_dedup_key(self) -> tuple[str, str | None, str]:
         """
         Get a unique key for deduplication.
 
         Returns:
-            Tuple of (title_lower, url_lower, username_lower)
+            Tuple of (title_lower, normalized_url, username_lower)
         """
         return (
             self.title.lower().strip(),
-            self.url.lower().strip() if self.url else None,
+            self.normalize_url(self.url),
             self.username.lower().strip(),
         )
 

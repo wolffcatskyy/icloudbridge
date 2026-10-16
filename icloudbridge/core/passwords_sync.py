@@ -424,7 +424,7 @@ class PasswordsSyncEngine:
             entry.password,
             entry.notes or "",
             PasswordsSyncEngine._otp(entry.otp_auth),
-            tuple(sorted(entry.get_all_urls())),
+            tuple(sorted({entry.normalize_url(url) for url in entry.get_all_urls()})),
         )
 
     def _build_password_sync_plan(
@@ -535,7 +535,7 @@ class PasswordsSyncEngine:
         baseline = {
             (
                 m["title"].lower().strip(),
-                m["url"].lower().strip() if m["url"] else None,
+                PasswordEntry.normalize_url(m["url"]),
                 m["username"].lower().strip(),
             ): m
             for m in mappings
@@ -578,9 +578,47 @@ class PasswordsSyncEngine:
                     }
                 )
 
+        # An export may rename a login while retaining its URL and username.
+        # Hold possible aliases even before a baseline exists; otherwise the first
+        # sync can propose a duplicate and only recognize it on subsequent runs.
+        matched = set(plan["unchanged"])
+        url_indexes = []
+        for entries in (apple_entries, remote_entries):
+            index = {}
+            for entry in entries:
+                username = entry.username.lower().strip()
+                if not username:
+                    continue
+                for url in entry.get_all_urls():
+                    index.setdefault((entry.normalize_url(url), username), set()).add(
+                        entry.get_dedup_key()
+                    )
+            url_indexes.append(index)
+        for entries, opposite in (
+            (apple_entries, url_indexes[1]),
+            (remote_entries, url_indexes[0]),
+        ):
+            for entry in entries:
+                key = entry.get_dedup_key()
+                identity = (key[0], key[2])
+                if key in matched or identity in blocked:
+                    continue
+                candidates = set()
+                for url in entry.get_all_urls():
+                    candidates.update(opposite.get((entry.normalize_url(url), key[2]), set()))
+                if candidates - {key}:
+                    blocked.add(identity)
+                    reviews.append(
+                        {
+                            "title": entry.title,
+                            "username": entry.username,
+                            "action": "review",
+                            "reason": "possible_renamed_identity",
+                        }
+                    )
+
         # Index identities once; equal pairs can clear old renamed mappings.
         by_title, by_url, by_id = {}, {}, {}
-        matched = set(plan["unchanged"])
         for e in apple_entries + remote_entries:
             key = e.get_dedup_key()
             if key in matched:
@@ -627,6 +665,20 @@ class PasswordsSyncEngine:
 
         additions = [e for e in plan["create_provider"] if allowed(e)] if run_push else []
         exports = [e for e in plan["create_apple"] if allowed(e)] if run_pull else []
+        importable = []
+        for e in exports:
+            reason = None
+            if not e.username.strip():
+                reason = "apple_import_missing_username"
+            elif not e.get_all_urls():
+                reason = "apple_import_missing_url"
+            if reason:
+                reviews.append(
+                    {"title": e.title, "username": e.username, "action": "review", "reason": reason}
+                )
+            else:
+                importable.append(e)
+        exports = importable
         # Without a fresh Apple snapshot we cannot establish absence safely.
         if run_pull and apple_csv_path is None:
             exports = []
@@ -679,20 +731,32 @@ class PasswordsSyncEngine:
                             {
                                 "title": a.title,
                                 "username": a.username,
-                                "url": a.url,
+                                "url": a.normalize_url(a.url),
                                 "provider_id": r.provider_id,
                                 "provider_type": provider_type,
                                 "last_apple_hash": a.get_password_hash(),
                                 "last_provider_hash": r.get_password_hash(),
                             }
                         )
-                # Retire tracking only when both fresh snapshots omit the old key.
-                # Keep one-sided old identities held, even if the provider ID moved.
-                retired = [
-                    m
-                    for key, m in baseline.items()
-                    if key not in apple_map and key not in remote_map
-                ]
+                # Retire tracking omitted by both snapshots or superseded by an
+                # actually observed equal pair with Safari's canonical root URL.
+                retired = []
+                for m in mappings:
+                    key = (
+                        m["title"].lower().strip(),
+                        PasswordEntry.normalize_url(m["url"]),
+                        m["username"].lower().strip(),
+                    )
+                    alias_replaced = (
+                        key in matched
+                        and allowed(apple_map[key])
+                        and (m.get("url") or "")
+                        != (apple_map[key].normalize_url(apple_map[key].url) or "")
+                    )
+                    if alias_replaced or (
+                        m.get("confirmed") and key not in apple_map and key not in remote_map
+                    ):
+                        retired.append(m)
                 await self.db.confirm_password_snapshot(confirmed, retired, apple_entries)
                 await self.db.record_sync(
                     sync_type="apple_import",
